@@ -130,4 +130,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Output files
 save/
+logs/
+datasets/
+wandb/

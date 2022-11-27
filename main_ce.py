@@ -6,7 +6,7 @@ import argparse
 import time
 import math
 
-import tensorboard_logger as tb_logger
+import wandb
 import torch
 import torch.backends.cudnn as cudnn
 from torchvision import transforms, datasets
@@ -16,31 +16,25 @@ from util import adjust_learning_rate, warmup_learning_rate, accuracy
 from util import set_optimizer, save_model
 from networks.resnet_big import SupCEResNet
 
-try:
-    import apex
-    from apex import amp, optimizers
-except ImportError:
-    pass
-
 
 def parse_option():
     parser = argparse.ArgumentParser('argument for training')
 
     parser.add_argument('--print_freq', type=int, default=10,
                         help='print frequency')
-    parser.add_argument('--save_freq', type=int, default=50,
+    parser.add_argument('--save_freq', type=int, default=2,
                         help='save frequency')
     parser.add_argument('--batch_size', type=int, default=256,
                         help='batch_size')
-    parser.add_argument('--num_workers', type=int, default=16,
+    parser.add_argument('--num_workers', type=int, default=10,
                         help='num of workers to use')
-    parser.add_argument('--epochs', type=int, default=500,
+    parser.add_argument('--epochs', type=int, default=200,
                         help='number of training epochs')
 
     # optimization
     parser.add_argument('--learning_rate', type=float, default=0.2,
                         help='learning rate')
-    parser.add_argument('--lr_decay_epochs', type=str, default='350,400,450',
+    parser.add_argument('--lr_decay_epochs', type=str, default='140,160,180',
                         help='where to decay lr, can be a list')
     parser.add_argument('--lr_decay_rate', type=float, default=0.1,
                         help='decay rate for learning rate')
@@ -50,39 +44,39 @@ def parse_option():
                         help='momentum')
 
     # model dataset
-    parser.add_argument('--model', type=str, default='resnet50')
+    parser.add_argument('--model', type=str, default='resnet18')
     parser.add_argument('--dataset', type=str, default='cifar10',
                         choices=['cifar10', 'cifar100'], help='dataset')
 
     # other setting
     parser.add_argument('--cosine', action='store_true',
                         help='using cosine annealing')
-    parser.add_argument('--syncBN', action='store_true',
-                        help='using synchronized batch normalization')
     parser.add_argument('--warm', action='store_true',
                         help='warm-up for large batch training')
-    parser.add_argument('--trial', type=str, default='0',
-                        help='id for recording multiple runs')
+    parser.add_argument('--seed', type = int, default=0, help = "set random seeds")
 
     opt = parser.parse_args()
 
     # set the path according to the environment
-    opt.data_folder = './datasets/'
-    opt.model_path = './save/SupCon/{}_models'.format(opt.dataset)
-    opt.tb_path = './save/SupCon/{}_tensorboard'.format(opt.dataset)
+    if opt.data_folder is None:
+        opt.data_folder = './datasets/'
+
+    opt.model_path = './save/SupCE/{}_models'.format(opt.dataset)
+    opt.wandb_path = './save/SupCE/{}_wandb'.format(opt.dataset)
 
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
     for it in iterations:
         opt.lr_decay_epochs.append(int(it))
 
-    opt.model_name = 'SupCE_{}_{}_lr_{}_decay_{}_bsz_{}_trial_{}'.\
+    opt.model_name = '{}_{}_lr_{}_decay_{}_bsz_{}'.\
         format(opt.dataset, opt.model, opt.learning_rate, opt.weight_decay,
-               opt.batch_size, opt.trial)
+               opt.batch_size)
+
 
     if opt.cosine:
         opt.model_name = '{}_cosine'.format(opt.model_name)
-
+    
     # warm-up for large-batch training,
     if opt.batch_size > 256:
         opt.warm = True
@@ -97,9 +91,11 @@ def parse_option():
         else:
             opt.warmup_to = opt.learning_rate
 
-    opt.tb_folder = os.path.join(opt.tb_path, opt.model_name)
-    if not os.path.isdir(opt.tb_folder):
-        os.makedirs(opt.tb_folder)
+    opt.model_name = '{}_seed_{}'.format(opt.model_name, opt.seed)
+
+    opt.wandb_folder = os.path.join(opt.wandb_path, opt.model_name)
+    if not os.path.isdir(opt.wandb_folder):
+        os.makedirs(opt.wandb_folder)
 
     opt.save_folder = os.path.join(opt.model_path, opt.model_name)
     if not os.path.isdir(opt.save_folder):
@@ -170,10 +166,6 @@ def set_loader(opt):
 def set_model(opt):
     model = SupCEResNet(name=opt.model, num_classes=opt.n_cls)
     criterion = torch.nn.CrossEntropyLoss()
-
-    # enable synchronized Batch Normalization
-    if opt.syncBN:
-        model = apex.parallel.convert_syncbn_model(model)
 
     if torch.cuda.is_available():
         if torch.cuda.device_count() > 1:
@@ -291,7 +283,14 @@ def main():
     optimizer = set_optimizer(opt, model)
 
     # tensorboard
-    logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
+    wandb.init(project=f"supervised_cross_entropy")
+    wandb.run.name = wandb.run.id
+    wandb.run.save()
+    wandb.config.update(opt)
+
+    save_file = os.path.join(
+                opt.save_folder, 'model_{0}.pth'.format(epoch=epoch))
+    save_model(model, optimizer, opt, epoch, save_file)
 
     # training routine
     for epoch in range(1, opt.epochs + 1):
@@ -299,31 +298,35 @@ def main():
 
         # train for one epoch
         time1 = time.time()
-        loss, train_acc = train(train_loader, model, criterion, optimizer, epoch, opt)
+        train_loss, train_acc = train(train_loader, model, criterion, optimizer, epoch, opt)
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
-        # tensorboard logger
-        logger.log_value('train_loss', loss, epoch)
-        logger.log_value('train_acc', train_acc, epoch)
-        logger.log_value('learning_rate', optimizer.param_groups[0]['lr'], epoch)
+        
 
         # evaluation
-        loss, val_acc = validate(val_loader, model, criterion, opt)
-        logger.log_value('val_loss', loss, epoch)
-        logger.log_value('val_acc', val_acc, epoch)
+        val_loss, val_acc = validate(val_loader, model, criterion, opt)
+    
+
+        # wandb logger
+        wandb.log({"epoch": epoch, 
+                       "learning_rate": optimizer.param_groups[0]['lr'],
+                       "train_loss": train_loss,
+                       "train_acc": train_acc,
+                       "val_loss": val_loss,
+                       "val_acc": val_acc})
 
         if val_acc > best_acc:
             best_acc = val_acc
 
         if epoch % opt.save_freq == 0:
             save_file = os.path.join(
-                opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
+                opt.save_folder, 'model_{epoch}.pth'.format(epoch=epoch))
             save_model(model, optimizer, opt, epoch, save_file)
 
     # save the last model
     save_file = os.path.join(
-        opt.save_folder, 'last.pth')
+        opt.save_folder, 'model_{epochs}.pth')
     save_model(model, optimizer, opt, opt.epochs, save_file)
 
     print('best accuracy: {:.2f}'.format(best_acc))

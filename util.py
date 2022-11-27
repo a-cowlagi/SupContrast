@@ -4,6 +4,7 @@ import math
 import numpy as np
 import torch
 import torch.optim as optim
+import random
 
 
 class TwoCropTransform:
@@ -93,3 +94,17 @@ def save_model(model, optimizer, opt, epoch, save_file):
     }
     torch.save(state, save_file)
     del state
+
+def set_seed(seed=0):
+    """
+    Don't set true seed to be nearby values. Doesn't give best randomness
+    """
+    rng = np.random.default_rng(seed)
+    true_seed = int(rng.integers(2**30))
+
+    random.seed(true_seed)
+    np.random.seed(true_seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.manual_seed(true_seed)
+    torch.cuda.manual_seed_all(true_seed)
