@@ -24,7 +24,7 @@ def parse_option():
 
     parser.add_argument('--print_freq', type=int, default=10,
                         help='print frequency')
-    parser.add_argument('--save_freq', type=int, default=2,
+    parser.add_argument('--save_freq', type=int, default=1,
                         help='save frequency')
     parser.add_argument('--batch_size', type=int, default=256,
                         help='batch_size')
@@ -297,7 +297,7 @@ def main():
 
     # save the last model
     save_file = os.path.join(
-        opt.save_folder, 'model_{epochs}.pth')
+        opt.save_folder, f'model_{opt.epochs}.pth')
     save_model(model, optimizer, opt, opt.epochs, save_file)
 
     wandb.finish()

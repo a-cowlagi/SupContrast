@@ -13,7 +13,7 @@ from torchvision import transforms, datasets
 
 from util import AverageMeter
 from util import adjust_learning_rate, warmup_learning_rate, accuracy
-from util import set_optimizer, save_model
+from util import set_optimizer, save_model, set_seed
 from networks.resnet_big import SupCEResNet
 
 
@@ -22,7 +22,7 @@ def parse_option():
 
     parser.add_argument('--print_freq', type=int, default=10,
                         help='print frequency')
-    parser.add_argument('--save_freq', type=int, default=2,
+    parser.add_argument('--save_freq', type=int, default=1,
                         help='save frequency')
     parser.add_argument('--batch_size', type=int, default=256,
                         help='batch_size')
@@ -47,6 +47,7 @@ def parse_option():
     parser.add_argument('--model', type=str, default='resnet18')
     parser.add_argument('--dataset', type=str, default='cifar10',
                         choices=['cifar10', 'cifar100'], help='dataset')
+    parser.add_argument('--data_folder', type=str, default=None, help='path to custom dataset')
 
     # other setting
     parser.add_argument('--cosine', action='store_true',
@@ -203,8 +204,8 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
 
         # update metric
         losses.update(loss.item(), bsz)
-        acc1, acc5 = accuracy(output, labels, topk=(1, 5))
-        top1.update(acc1[0], bsz)
+        acc1 = accuracy(output, labels, topk=(1, ))
+        top1.update(acc1[0].item(), bsz)
 
         # SGD
         optimizer.zero_grad()
@@ -217,13 +218,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
 
         # print info
         if (idx + 1) % opt.print_freq == 0:
-            print('Train: [{0}][{1}/{2}]\t'
-                  'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'loss {loss.val:.3f} ({loss.avg:.3f})\t'
-                  'Acc@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
-                   epoch, idx + 1, len(train_loader), batch_time=batch_time,
-                   data_time=data_time, loss=losses, top1=top1))
+            print(f'Train: [{epoch}][{idx + 1}/{len(train_loader)}]\t loss {losses.val:.3f} ({losses.avg:.3f}) Acc@1 {top1.val:.3f} ({top1.avg:.3f})')
             sys.stdout.flush()
 
     return losses.avg, top1.avg
@@ -250,20 +245,18 @@ def validate(val_loader, model, criterion, opt):
 
             # update metric
             losses.update(loss.item(), bsz)
-            acc1, acc5 = accuracy(output, labels, topk=(1, 5))
-            top1.update(acc1[0], bsz)
+            acc1 = accuracy(output, labels, topk=(1,))
+            top1.update(acc1[0].item(), bsz)
 
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
 
+            # print info
             if idx % opt.print_freq == 0:
-                print('Test: [{0}/{1}]\t'
-                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                      'Acc@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
-                       idx, len(val_loader), batch_time=batch_time,
-                       loss=losses, top1=top1))
+                print(f'Test: [{idx}/{len(val_loader)}]\t Loss {losses.val:.4f} ({losses.avg:.4f})\t Acc@1 {top1.val:.3f} ({top1.avg:.3f})')
+                sys.stdout.flush()
+
 
     print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
     return losses.avg, top1.avg
@@ -272,7 +265,10 @@ def validate(val_loader, model, criterion, opt):
 def main():
     best_acc = 0
     opt = parse_option()
-
+    
+    # set random seed
+    set_seed(opt.seed)
+    
     # build data loader
     train_loader, val_loader = set_loader(opt)
 
@@ -283,14 +279,13 @@ def main():
     optimizer = set_optimizer(opt, model)
 
     # tensorboard
-    wandb.init(project=f"supervised_cross_entropy")
-    wandb.run.name = wandb.run.id
-    wandb.run.save()
+    wandb.init(project=f"supervised_ce", dir = opt.wandb_folder)
+    wandb.run.name = f"supervised_ce_seed_{opt.seed}"
     wandb.config.update(opt)
 
     save_file = os.path.join(
-                opt.save_folder, 'model_{0}.pth'.format(epoch=epoch))
-    save_model(model, optimizer, opt, epoch, save_file)
+                opt.save_folder, 'model_0.pth')
+    save_model(model, optimizer, opt, 0, save_file)
 
     # training routine
     for epoch in range(1, opt.epochs + 1):
@@ -326,7 +321,7 @@ def main():
 
     # save the last model
     save_file = os.path.join(
-        opt.save_folder, 'model_{epochs}.pth')
+        opt.save_folder, f'model_{opt.epochs}.pth')
     save_model(model, optimizer, opt, opt.epochs, save_file)
 
     print('best accuracy: {:.2f}'.format(best_acc))
