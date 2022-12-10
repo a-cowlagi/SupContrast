@@ -16,7 +16,7 @@ from main_ce import set_loader
 from util import AverageMeter
 from util import adjust_learning_rate, warmup_learning_rate, accuracy
 from util import set_optimizer, set_seed, save_model
-from networks.resnet_big import SupConResNet, LinearClassifier
+from networks.resnet_big import SupConResNet, SupCEResNet, LinearClassifier
 
 
 def parse_option():
@@ -63,7 +63,7 @@ def parse_option():
     parser.add_argument('--ckpt', type=str, default='',
                         help='path to pre-trained model')
     parser.add_argument('--method', type=str, default='SupCon',
-                        choices=['SupCon', 'SimCLR'], help='choose method')
+                        choices=['SupCon', 'SimCLR', 'SupCE'], help='choose method')
     parser.add_argument('--pretrained_tag', type=str, default='',
                         help='pre-trained model tag')
 
@@ -138,13 +138,17 @@ def fetch_dataset(opt):
     return dataset
 
 def set_model(opt):
-    model = SupConResNet(name=opt.model)
-    criterion = torch.nn.CrossEntropyLoss()
-
-    classifier = LinearClassifier(name=opt.model, num_classes=opt.n_cls)
-
     ckpt = torch.load(opt.ckpt, map_location='cpu')
     state_dict = ckpt['model']
+
+    if (opt.method == 'SupCon' or opt.method == 'SimCLR'):
+        model = SupConResNet(name=opt.model, feat_dim = ckpt["model"]["head.2.bias"].shape[0])
+    elif (opt.method == 'SupCE'):
+        model = SupCEResNet(name=opt.model, num_classes= ckpt["model"]["fc.bias"].shape[0])
+    
+    criterion = torch.nn.CrossEntropyLoss()
+    classifier = LinearClassifier(name=opt.model, num_classes=opt.n_cls)
+
 
     if torch.cuda.is_available():
         if torch.cuda.device_count() > 1:
@@ -155,6 +159,7 @@ def set_model(opt):
                 k = k.replace("module.", "")
                 new_state_dict[k] = v
             state_dict = new_state_dict
+        
         model = model.cuda()
         classifier = classifier.cuda()
         criterion = criterion.cuda()
@@ -280,12 +285,9 @@ def main():
     if val_acc > best_acc:
         best_acc = val_acc
 
-
     wandb.log({"epoch": 0, 
                     "learning_rate": optimizer.param_groups[0]['lr'],
-                    "train_loss": train_loss,
                     "val_loss": val_loss,
-                    "train_acc": train_acc,
                     "val_acc": val_acc})
 
     save_file = os.path.join(
